@@ -123,7 +123,7 @@ def evaluate_trend_template(ticker: str, df: pd.DataFrame) -> Optional[Dict]:
         }
 
         trend_passed = all(conditions.values())
-        volume_passed = volume_ratio >= 1.5
+        volume_passed = volume_ratio >= 1.1
         passed = trend_passed and volume_passed
 
         return {
@@ -217,7 +217,7 @@ def main() -> int:
         else:
             failed_conditions = [k for k, v in result["conditions"].items() if not v]
             if not result["volume_passed"]:
-                failed_conditions.append("9_volume_gte_1.5x_avg50")
+                failed_conditions.append("9_volume_gte_1.1x_avg50")
             log(f"[FAIL] {ticker}: 未達条件={failed_conditions}")
 
     # 出来高倍率が高い順で見やすく並べる
