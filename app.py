@@ -41,12 +41,12 @@ def fetch_daily_data(ticker: str) -> pd.DataFrame:
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = [col[0] for col in df.columns]
 
-    required_cols = {"Close", "Low", "Volume"}
+    required_cols = {"Close", "Low", "High", "Volume"}
     missing = required_cols - set(df.columns)
     if missing:
         raise ValueError(f"{ticker}: 必須列が不足しています: {missing}")
 
-    df = df.dropna(subset=["Close", "Low", "Volume"]).copy()
+    df = df.dropna(subset=["Close", "Low", "High", "Volume"]).copy()
 
     if len(df) < 260:
         raise ValueError(f"{ticker}: データ不足のため判定不可（件数={len(df)}）")
@@ -60,6 +60,7 @@ def evaluate_trend_template(ticker: str, df: pd.DataFrame) -> Dict[str, Any]:
     """
     close = df["Close"].astype(float)
     low = df["Low"].astype(float)
+    high = df["High"].astype(float)
     volume = df["Volume"].astype(float)
 
     ma50 = close.rolling(50).mean()
@@ -79,6 +80,9 @@ def evaluate_trend_template(ticker: str, df: pd.DataFrame) -> Dict[str, Any]:
     low_52w = float(low.tail(252).min())
     low_52w_ratio = current_price / low_52w if low_52w > 0 else 0.0
 
+    # 当日を除く直前50営業日の高値最大値
+    high_50d = float(high.iloc[-51:-1].max())
+
     # 200日MAが20営業日前より上なら「少なくとも1ヶ月上昇トレンド」とみなす
     ma200_20d_ago = float(ma200.iloc[-21])
 
@@ -94,8 +98,9 @@ def evaluate_trend_template(ticker: str, df: pd.DataFrame) -> Dict[str, Any]:
     }
 
     passed = all(conditions.values())
-    volume_passed = volume_ratio >= 1.1
-    final_passed = passed and volume_passed
+    volume_passed = passed and volume_ratio >= 1.1
+    high_50d_passed = volume_passed and current_price > high_50d
+    final_passed = passed and volume_passed and high_50d_passed
 
     result_text = (
         f"{ticker} | "
@@ -106,7 +111,8 @@ def evaluate_trend_template(ticker: str, df: pd.DataFrame) -> Dict[str, Any]:
         f"52WLow={low_52w:.2f}, "
         f"52週安値比={low_52w_ratio:.2f}x "
         f"({(low_52w_ratio - 1) * 100:.1f}%上), "
-        f"Volume={volume_ratio:.2f}x | "
+        f"Volume={volume_ratio:.2f}x, "
+        f"50DHigh={high_50d:.2f} | "
         f"判定={'PASS' if passed else 'FAIL'}"
     )
 
@@ -114,9 +120,11 @@ def evaluate_trend_template(ticker: str, df: pd.DataFrame) -> Dict[str, Any]:
         "ticker": ticker,
         "passed": passed,
         "volume_passed": volume_passed,
+        "high_50d_passed": high_50d_passed,
         "final_passed": final_passed,
         "volume_ratio": volume_ratio,
         "current_price": current_price,
+        "high_50d": high_50d,
         "conditions": conditions,
         "result_text": result_text,
     }
@@ -131,7 +139,11 @@ def post_to_slack(webhook_url: str, text: str) -> None:
     response.raise_for_status()
 
 
-def build_slack_message(pass_results: List[Dict[str, Any]], final_pass_results: List[Dict[str, Any]]) -> str:
+def build_slack_message(
+    pass_results: List[Dict[str, Any]],
+    volume_pass_results: List[Dict[str, Any]],
+    final_pass_results: List[Dict[str, Any]],
+) -> str:
     lines = []
 
     lines.append("ミネルヴィニ・トレンドテンプレート通過銘柄")
@@ -143,10 +155,21 @@ def build_slack_message(pass_results: List[Dict[str, Any]], final_pass_results: 
 
     lines.append("")
     lines.append("出来高条件通過銘柄（トレンドテンプレート合致 かつ 直近出来高が50日平均の1.1倍以上）")
+    if volume_pass_results:
+        for item in volume_pass_results:
+            lines.append(
+                f"{item['ticker']} | Close={item['current_price']:.2f} | Volume={item['volume_ratio']:.2f}x"
+            )
+    else:
+        lines.append("該当なし")
+
+    lines.append("")
+    lines.append("最終通過銘柄（トレンドテンプレート合致 ＋ 出来高条件通過 ＋ 50日高値更新）")
     if final_pass_results:
         for item in final_pass_results:
             lines.append(
-                f"{item['ticker']} | Close={item['current_price']:.2f} | Volume={item['volume_ratio']:.2f}x"
+                f"{item['ticker']} | Close={item['current_price']:.2f} | "
+                f"Volume={item['volume_ratio']:.2f}x | 50DHigh={item['high_50d']:.2f}"
             )
     else:
         lines.append("該当なし")
@@ -163,6 +186,7 @@ def main() -> None:
         return
 
     pass_results: List[Dict[str, Any]] = []
+    volume_pass_results: List[Dict[str, Any]] = []
     final_pass_results: List[Dict[str, Any]] = []
 
     for ticker in TICKERS:
@@ -176,6 +200,9 @@ def main() -> None:
             if result["passed"]:
                 pass_results.append(result)
 
+            if result["volume_passed"]:
+                volume_pass_results.append(result)
+
             if result["final_passed"]:
                 final_pass_results.append(result)
 
@@ -183,7 +210,7 @@ def main() -> None:
             log(f"エラー: {ticker} の処理に失敗しました: {e}")
             log(traceback.format_exc())
 
-    message = build_slack_message(pass_results, final_pass_results)
+    message = build_slack_message(pass_results, volume_pass_results, final_pass_results)
 
     try:
         post_to_slack(webhook_url, message)
