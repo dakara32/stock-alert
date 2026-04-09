@@ -60,15 +60,20 @@ def evaluate_trend_template(ticker: str, df: pd.DataFrame) -> Dict[str, Any]:
     """
     close = df["Close"].astype(float)
     low = df["Low"].astype(float)
+    volume = df["Volume"].astype(float)
 
     ma50 = close.rolling(50).mean()
     ma150 = close.rolling(150).mean()
     ma200 = close.rolling(200).mean()
+    volume_ma50 = volume.rolling(50).mean()
 
     current_price = float(close.iloc[-1])
     current_ma50 = float(ma50.iloc[-1])
     current_ma150 = float(ma150.iloc[-1])
     current_ma200 = float(ma200.iloc[-1])
+    current_volume = float(volume.iloc[-1])
+    current_volume_ma50 = float(volume_ma50.iloc[-1])
+    volume_ratio = current_volume / current_volume_ma50 if current_volume_ma50 > 0 else 0.0
 
     # 52週 = 約252営業日
     low_52w = float(low.tail(252).min())
@@ -89,6 +94,8 @@ def evaluate_trend_template(ticker: str, df: pd.DataFrame) -> Dict[str, Any]:
     }
 
     passed = all(conditions.values())
+    volume_passed = volume_ratio >= 1.1
+    final_passed = passed and volume_passed
 
     result_text = (
         f"{ticker} | "
@@ -98,48 +105,19 @@ def evaluate_trend_template(ticker: str, df: pd.DataFrame) -> Dict[str, Any]:
         f"MA200={current_ma200:.2f}, "
         f"52WLow={low_52w:.2f}, "
         f"52週安値比={low_52w_ratio:.2f}x "
-        f"({(low_52w_ratio - 1) * 100:.1f}%上) | "
+        f"({(low_52w_ratio - 1) * 100:.1f}%上), "
+        f"Volume={volume_ratio:.2f}x | "
         f"判定={'PASS' if passed else 'FAIL'}"
     )
 
     return {
         "ticker": ticker,
         "passed": passed,
-        "conditions": conditions,
-        "result_text": result_text,
-        "close": current_price,
-    }
-
-
-def evaluate_volume_filter(ticker: str, df: pd.DataFrame) -> Dict[str, Any]:
-    """
-    直近出来高が50日平均出来高の1.1倍以上かを評価
-    """
-    volume = df["Volume"].astype(float)
-
-    current_volume = float(volume.iloc[-1])
-    avg_volume_50 = float(volume.tail(50).mean())
-
-    if avg_volume_50 <= 0:
-        raise ValueError(f"{ticker}: 50日平均出来高が不正です")
-
-    volume_ratio = current_volume / avg_volume_50
-    passed = volume_ratio >= 1.1
-
-    result_text = (
-        f"{ticker} | "
-        f"Volume={current_volume:.0f}, "
-        f"Avg50={avg_volume_50:.0f}, "
-        f"出来高倍率={volume_ratio:.2f}x | "
-        f"判定={'PASS' if passed else 'FAIL'}"
-    )
-
-    return {
-        "ticker": ticker,
-        "passed": passed,
-        "current_volume": current_volume,
-        "avg_volume_50": avg_volume_50,
+        "volume_passed": volume_passed,
+        "final_passed": final_passed,
         "volume_ratio": volume_ratio,
+        "current_price": current_price,
+        "conditions": conditions,
         "result_text": result_text,
     }
 
@@ -153,15 +131,26 @@ def post_to_slack(webhook_url: str, text: str) -> None:
     response.raise_for_status()
 
 
-def build_slack_message(pass_results: List[Dict[str, Any]]) -> str:
-    if not pass_results:
-        return "ミネルヴィニ・トレンドテンプレート合致かつ出来高条件通過銘柄: 該当なし"
+def build_slack_message(pass_results: List[Dict[str, Any]], final_pass_results: List[Dict[str, Any]]) -> str:
+    lines = []
 
-    lines = ["ミネルヴィニ・トレンドテンプレート合致かつ出来高条件通過銘柄"]
-    for item in pass_results:
-        lines.append(
-            f"{item['ticker']} | Close={item['close']:.2f} | 出来高={item['volume_ratio']:.2f}x"
-        )
+    lines.append("ミネルヴィニ・トレンドテンプレート通過銘柄")
+    if pass_results:
+        for item in pass_results:
+            lines.append(item["result_text"])
+    else:
+        lines.append("該当なし")
+
+    lines.append("")
+    lines.append("出来高条件通過銘柄（トレンドテンプレート合致 かつ 直近出来高が50日平均の1.1倍以上）")
+    if final_pass_results:
+        for item in final_pass_results:
+            lines.append(
+                f"{item['ticker']} | Close={item['current_price']:.2f} | Volume={item['volume_ratio']:.2f}x"
+            )
+    else:
+        lines.append("該当なし")
+
     return "\n".join(lines)
 
 
@@ -174,30 +163,27 @@ def main() -> None:
         return
 
     pass_results: List[Dict[str, Any]] = []
+    final_pass_results: List[Dict[str, Any]] = []
 
     for ticker in TICKERS:
         try:
             log(f"取得中: {ticker}")
             df = fetch_daily_data(ticker)
+            result = evaluate_trend_template(ticker, df)
 
-            trend_result = evaluate_trend_template(ticker, df)
-            log(trend_result["result_text"])
+            log(result["result_text"])
 
-            volume_result = evaluate_volume_filter(ticker, df)
-            log(volume_result["result_text"])
+            if result["passed"]:
+                pass_results.append(result)
 
-            if trend_result["passed"] and volume_result["passed"]:
-                pass_results.append({
-                    "ticker": ticker,
-                    "close": trend_result["close"],
-                    "volume_ratio": volume_result["volume_ratio"],
-                })
+            if result["final_passed"]:
+                final_pass_results.append(result)
 
         except Exception as e:
             log(f"エラー: {ticker} の処理に失敗しました: {e}")
             log(traceback.format_exc())
 
-    message = build_slack_message(pass_results)
+    message = build_slack_message(pass_results, final_pass_results)
 
     try:
         post_to_slack(webhook_url, message)
