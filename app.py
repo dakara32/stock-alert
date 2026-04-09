@@ -1,5 +1,6 @@
 import os
 import traceback
+from datetime import datetime, timezone
 from typing import List, Dict, Any
 
 import pandas as pd
@@ -146,30 +147,16 @@ def build_slack_message(
 ) -> str:
     lines = []
 
-    lines.append("ミネルヴィニ・トレンドテンプレート通過銘柄")
-    if pass_results:
-        for item in pass_results:
-            lines.append(item["result_text"])
-    else:
-        lines.append("該当なし")
+    executed_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    lines.append(f"📊 Trend Template + Vol×1.1 + 50D High ｜ {executed_at}")
 
-    lines.append("")
-    lines.append("出来高条件通過銘柄（トレンドテンプレート合致 かつ 直近出来高が50日平均の1.1倍以上）")
-    if volume_pass_results:
-        for item in volume_pass_results:
-            lines.append(
-                f"{item['ticker']} | Close={item['current_price']:.2f} | Volume={item['volume_ratio']:.2f}x"
-            )
-    else:
-        lines.append("該当なし")
-
-    lines.append("")
-    lines.append("最終通過銘柄（トレンドテンプレート合致 ＋ 出来高条件通過 ＋ 50日高値更新）")
     if final_pass_results:
         for item in final_pass_results:
             lines.append(
-                f"{item['ticker']} | Close={item['current_price']:.2f} | "
-                f"Volume={item['volume_ratio']:.2f}x | 50DHigh={item['high_50d']:.2f}"
+                f"{item['ticker']}｜"
+                f"${item['current_price']:.2f}｜"
+                f"Vol ×{item['volume_ratio']:.1f}｜"
+                f"50D High ${item['high_50d']:.2f}"
             )
     else:
         lines.append("該当なし")
