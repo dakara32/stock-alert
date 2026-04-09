@@ -48,9 +48,9 @@ def fetch_ohlcv(ticker: str) -> Optional[pd.DataFrame]:
             log(f"[WARN] {ticker}: 必須列が不足しています missing={sorted(missing)}")
             return None
 
-        df = df.dropna(subset=["Close", "Low"]).copy()
+        df = df.dropna(subset=["Close", "Low", "Volume"]).copy()
         if df.empty:
-            log(f"[WARN] {ticker}: 有効な終値データがありません")
+            log(f"[WARN] {ticker}: 有効な終値または出来高データがありません")
             return None
 
         return df
@@ -71,6 +71,7 @@ def evaluate_trend_template(ticker: str, df: pd.DataFrame) -> Optional[Dict]:
         df["ma50"] = df["Close"].rolling(window=50).mean()
         df["ma150"] = df["Close"].rolling(window=150).mean()
         df["ma200"] = df["Close"].rolling(window=200).mean()
+        df["avg_volume_50"] = df["Volume"].rolling(window=50).mean()
 
         latest = df.iloc[-1]
 
@@ -85,9 +86,21 @@ def evaluate_trend_template(ticker: str, df: pd.DataFrame) -> Optional[Dict]:
         ma50 = latest["ma50"]
         ma150 = latest["ma150"]
         ma200 = latest["ma200"]
+        latest_volume = latest["Volume"]
+        avg_volume_50 = latest["avg_volume_50"]
 
-        if pd.isna(ma50) or pd.isna(ma150) or pd.isna(ma200) or pd.isna(ma200_20d_ago):
-            log(f"[WARN] {ticker}: 移動平均の計算に必要なデータが不足しています")
+        if (
+            pd.isna(ma50)
+            or pd.isna(ma150)
+            or pd.isna(ma200)
+            or pd.isna(ma200_20d_ago)
+            or pd.isna(avg_volume_50)
+        ):
+            log(f"[WARN] {ticker}: 移動平均または平均出来高の計算に必要なデータが不足しています")
+            return None
+
+        if avg_volume_50 <= 0:
+            log(f"[WARN] {ticker}: 50日平均出来高が不正です avg_volume_50={avg_volume_50}")
             return None
 
         low_52w = df["Low"].tail(252).min()
@@ -96,6 +109,7 @@ def evaluate_trend_template(ticker: str, df: pd.DataFrame) -> Optional[Dict]:
             return None
 
         pct_from_52w_low = ((close_price / low_52w) - 1.0) * 100.0
+        volume_ratio = float(latest_volume) / float(avg_volume_50)
 
         conditions = {
             "1_close_gt_ma150": close_price > ma150,
@@ -108,7 +122,9 @@ def evaluate_trend_template(ticker: str, df: pd.DataFrame) -> Optional[Dict]:
             "8_close_25pct_above_52w_low": pct_from_52w_low >= 25.0,
         }
 
-        passed = all(conditions.values())
+        trend_passed = all(conditions.values())
+        volume_passed = volume_ratio >= 1.5
+        passed = trend_passed and volume_passed
 
         return {
             "ticker": ticker,
@@ -119,7 +135,12 @@ def evaluate_trend_template(ticker: str, df: pd.DataFrame) -> Optional[Dict]:
             "ma200_20d_ago": float(ma200_20d_ago),
             "low_52w": float(low_52w),
             "pct_from_52w_low": float(pct_from_52w_low),
+            "latest_volume": float(latest_volume),
+            "avg_volume_50": float(avg_volume_50),
+            "volume_ratio": float(volume_ratio),
             "conditions": conditions,
+            "trend_passed": trend_passed,
+            "volume_passed": volume_passed,
             "passed": passed,
         }
 
@@ -133,19 +154,15 @@ def format_result_line(result: Dict) -> str:
     return (
         f"{result['ticker']}: "
         f"Close={result['close']:.2f}, "
-        f"MA50={result['ma50']:.2f}, "
-        f"MA150={result['ma150']:.2f}, "
-        f"MA200={result['ma200']:.2f}, "
-        f"52W Low={result['low_52w']:.2f}, "
-        f"52W Low比={result['pct_from_52w_low']:.1f}%"
+        f"Volume x{result['volume_ratio']:.2f}"
     )
 
 
 def build_slack_message(passed_results: List[Dict], all_results: List[Dict]) -> str:
-    header = f"ミネルヴィニ・トレンドテンプレート合致銘柄: {len(passed_results)} / {len(all_results)}"
+    header = f"ミネルヴィニ・トレンドテンプレート+出来高条件 合致銘柄: {len(passed_results)} / {len(all_results)}"
 
     if not passed_results:
-        return header + "\n該当銘柄はありませんでした。"
+        return header + "\n該当なし"
 
     body_lines = [format_result_line(r) for r in passed_results]
     return header + "\n" + "\n".join(body_lines)
@@ -199,10 +216,12 @@ def main() -> int:
             log(f"[PASS] {format_result_line(result)}")
         else:
             failed_conditions = [k for k, v in result["conditions"].items() if not v]
+            if not result["volume_passed"]:
+                failed_conditions.append("9_volume_gte_1.5x_avg50")
             log(f"[FAIL] {ticker}: 未達条件={failed_conditions}")
 
-    # 52週安値比が高い順で見やすく並べる
-    passed_results.sort(key=lambda x: x["pct_from_52w_low"], reverse=True)
+    # 出来高倍率が高い順で見やすく並べる
+    passed_results.sort(key=lambda x: x["volume_ratio"], reverse=True)
 
     message = build_slack_message(passed_results, all_results)
     log("[INFO] Slack送信用メッセージ")
