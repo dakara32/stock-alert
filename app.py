@@ -148,6 +148,7 @@ def build_slack_message(
     lines = []
     run_date = datetime.now().strftime("%Y-%m-%d")
 
+    lines.append("```")
     lines.append(f"📊 Trend Template + Vol×1.1 + 50D High ｜ {run_date}")
     lines.append("")
 
@@ -179,6 +180,8 @@ def build_slack_message(
             )
     else:
         lines.append("該当なし")
+
+    lines.append("```")
 
     return "\n".join(lines)
 
