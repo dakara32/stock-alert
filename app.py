@@ -221,7 +221,7 @@ def create_price_chart(ticker: str, df: pd.DataFrame) -> Optional[Path]:
         plt.savefig(chart_path, format="png", dpi=150)
         plt.close()
 
-        log(f"[CHART][CREATED] {ticker}: {chart_path}")
+        log(f"画像保存成功: {ticker} path={chart_path}")
         return chart_path
 
     except Exception as e:
@@ -339,7 +339,7 @@ def post_slack_parent_message(
             log("[SLACK_IMAGE][ERROR] 親メッセージのtsが取得できませんでした")
             return None
 
-        log(f"[SLACK_IMAGE][PARENT] thread_ts={thread_ts}")
+        log(f"Slack親メッセージ投稿成功: thread_ts={thread_ts}")
         return thread_ts
 
     except Exception as e:
@@ -497,7 +497,9 @@ def upload_chart_images_to_slack_thread(
                 file_path=chart_path,
             )
             if completed:
+                ticker = chart_path.stem.split("_")[0]
                 success_count += 1
+                log(f"画像アップロード成功: {ticker} path={chart_path}")
 
         except Exception as e:
             log(f"[SLACK_IMAGE][ERROR] 画像アップロード処理に失敗しました: {chart_path}: {e}")
