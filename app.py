@@ -1,5 +1,4 @@
-# app.py
-
+import json
 import os
 import traceback
 from datetime import datetime
@@ -271,6 +270,7 @@ def slack_api_post(
 ) -> Dict[str, Any]:
     """
     Slack Web APIへJSON POSTする。
+    chat.postMessage 用。
     """
     response = requests.post(
         f"https://slack.com/api/{endpoint}",
@@ -279,6 +279,33 @@ def slack_api_post(
             "Content-Type": "application/json; charset=utf-8",
         },
         json=payload,
+        timeout=30,
+    )
+    response.raise_for_status()
+
+    data = response.json()
+    if not data.get("ok"):
+        raise RuntimeError(f"Slack API error: endpoint={endpoint}, response={data}")
+
+    return data
+
+
+def slack_api_post_form(
+    bot_token: str,
+    endpoint: str,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Slack Web APIへ application/x-www-form-urlencoded でPOSTする。
+    files.getUploadURLExternal / files.completeUploadExternal 用。
+    """
+    response = requests.post(
+        f"https://slack.com/api/{endpoint}",
+        headers={
+            "Authorization": f"Bearer {bot_token}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        data=payload,
         timeout=30,
     )
     response.raise_for_status()
@@ -338,12 +365,14 @@ def get_slack_upload_url(
             log(f"[SLACK_IMAGE][SKIP] 画像ファイルサイズが0です: {file_path}")
             return None
 
-        data = slack_api_post(
+        log(f"[SLACK_IMAGE][UPLOAD_URL_REQUEST] filename={file_path.name}, length={file_size}")
+
+        data = slack_api_post_form(
             bot_token=bot_token,
             endpoint="files.getUploadURLExternal",
             payload={
-                "filename": file_path.name,
-                "length": file_size,
+                "filename": str(file_path.name),
+                "length": str(file_size),
             },
         )
 
@@ -353,6 +382,8 @@ def get_slack_upload_url(
         if not upload_url or not file_id:
             log(f"[SLACK_IMAGE][ERROR] upload_urlまたはfile_idが取得できません: {file_path}")
             return None
+
+        log(f"[SLACK_IMAGE][UPLOAD_URL_OK] file_id={file_id}, filename={file_path.name}")
 
         return {
             "upload_url": upload_url,
@@ -400,16 +431,18 @@ def complete_slack_upload(
     files.completeUploadExternalでSlack投稿を完了する。
     """
     try:
-        slack_api_post(
+        log(f"[SLACK_IMAGE][COMPLETE_REQUEST] file_id={file_id}, channel={channel}, thread_ts={thread_ts}")
+
+        slack_api_post_form(
             bot_token=bot_token,
             endpoint="files.completeUploadExternal",
             payload={
-                "files": [
+                "files": json.dumps([
                     {
                         "id": file_id,
                         "title": file_path.stem,
                     }
-                ],
+                ]),
                 "channel_id": channel,
                 "thread_ts": thread_ts,
             },
